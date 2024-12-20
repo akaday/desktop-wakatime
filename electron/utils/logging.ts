@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { format } from "date-fns";
+import { app } from "electron";
 
 import { getResourcesFolderPath } from ".";
+import { Dependencies } from "../../electron/helpers/dependencies";
 
 export enum LogLevel {
   DEBUG = 0,
@@ -13,7 +15,7 @@ export enum LogLevel {
 
 export class Logging {
   static _instacneCache?: Logging;
-  level = LogLevel.DEBUG;
+  level = LogLevel.INFO;
   filePath: string | null = null;
 
   static instance(): Logging {
@@ -32,6 +34,14 @@ export class Logging {
     }
   }
 
+  enableDebugLogging(): void {
+    this.level = LogLevel.DEBUG;
+  }
+
+  disableDebugLogging(): void {
+    this.level = LogLevel.INFO;
+  }
+
   activateLoggingToFile() {
     const logFilePath = path.join(
       getResourcesFolderPath(),
@@ -44,7 +54,7 @@ export class Logging {
     this.filePath = null;
   }
 
-  public log(msg: string, level = LogLevel.DEBUG) {
+  public log(msg: string, level = LogLevel.DEBUG, sendDiagnostics = false) {
     if (level < this.level) {
       return;
     }
@@ -65,6 +75,18 @@ export class Logging {
         });
       } else {
         fs.writeFileSync(this.filePath, logMessage, { encoding: "utf-8" });
+      }
+    }
+
+    if (sendDiagnostics && level == LogLevel.ERROR) {
+      try {
+        throw new Error(msg);
+      } catch (e) {
+        void Dependencies.reportError(
+          e as Error,
+          "console.error",
+          app.getVersion(),
+        );
       }
     }
   }

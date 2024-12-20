@@ -9,7 +9,6 @@ import {
   shell,
   Tray,
 } from "electron";
-import { autoUpdater } from "electron-updater";
 
 import type { DomainPreferenceType, FilterType } from "./utils/constants";
 import { AppsManager } from "./helpers/apps-manager";
@@ -19,7 +18,7 @@ import { PropertiesManager } from "./helpers/properties-manager";
 import { SettingsManager } from "./helpers/settings-manager";
 import { getLogFilePath } from "./utils";
 import { DeepLink, IpcKeys, WAKATIME_PROTOCALL } from "./utils/constants";
-import { Logging } from "./utils/logging";
+import { Logging, LogLevel } from "./utils/logging";
 import { AppData } from "./utils/validators";
 import { Wakatime } from "./watchers/wakatime";
 import { Watcher } from "./watchers/watcher";
@@ -42,40 +41,6 @@ process.env.ELECTRON_DIR = app.isPackaged
   : path.join(__dirname, "../electron");
 
 const isMacOS = process.platform === "darwin";
-
-autoUpdater.setFeedURL({
-  provider: "github",
-  owner: "wakatime",
-  repo: "desktop-wakatime",
-});
-autoUpdater.autoDownload = true;
-autoUpdater.autoInstallOnAppQuit = true;
-autoUpdater.autoRunAppAfterInstall = true;
-
-autoUpdater.on("checking-for-update", () => {
-  Logging.instance().log("Checking for update");
-});
-autoUpdater.on("update-available", async (res) => {
-  Logging.instance().log(
-    `Update available. Version: ${res.version}, Files: ${res.files.map((file) => file.url).join(", ")}`,
-  );
-  await autoUpdater.downloadUpdate();
-});
-autoUpdater.on("update-downloaded", (res) => {
-  Logging.instance().log(
-    `Update Downloaded. Downloaded file: ${res.downloadedFile}, Version: ${res.version}, `,
-  );
-  autoUpdater.quitAndInstall();
-});
-autoUpdater.on("update-not-available", () => {
-  Logging.instance().log("Update not available");
-});
-autoUpdater.on("update-cancelled", () => {
-  Logging.instance().log("Update cancelled");
-});
-autoUpdater.on("error", (err) => {
-  Logging.instance().log(`electron-updater error. Error: ${err.message}`);
-});
 
 let settingsWindow: BrowserWindow | null = null;
 let monitoredAppsWindow: BrowserWindow | null = null;
@@ -196,7 +161,7 @@ function openMonitoredApps() {
 
 function createTray() {
   const trayIcon = nativeImage.createFromPath(
-    path.join(process.env.VITE_PUBLIC!, "trayIconTemplate.png"),
+    path.join(process.env.VITE_PUBLIC!, "trayIcon.png"),
   );
   tray = new Tray(trayIcon);
   const contextMenu = Menu.buildFromTemplate([
@@ -226,10 +191,26 @@ function createTray() {
   ]);
   tray.setToolTip("WakaTime");
   tray.setContextMenu(contextMenu);
-  tray.addListener("click", () => {
-    tray?.popUpContextMenu();
-    wakatime?.fetchToday();
-  });
+
+  const handleClick = () => {
+    if (!tray) {
+      Logging.instance().log("Tray is not initialized", LogLevel.ERROR, true);
+      return;
+    }
+    try {
+      tray.popUpContextMenu();
+      wakatime?.fetchToday();
+    } catch (error) {
+      Logging.instance().log(
+        `Tray click error: ${error}`,
+        LogLevel.ERROR,
+        true,
+      );
+    }
+  };
+  tray.addListener("click", handleClick);
+  tray.addListener("right-click", handleClick);
+  tray.addListener("double-click", handleClick);
 }
 
 // Hide app from macOS doc
@@ -375,7 +356,15 @@ ipcMain.on(IpcKeys.autoUpdateEnabled, (event) => {
 ipcMain.on(IpcKeys.setAutoUpdateEnabled, (_, value) => {
   PropertiesManager.autoUpdateEnabled = value;
   if (value) {
-    autoUpdater.checkForUpdatesAndNotify();
+    wakatime?.checkForUpdates();
+  }
+});
+
+ipcMain.on(IpcKeys.setDebugMode, (_, value) => {
+  if (value) {
+    Logging.instance().enableDebugLogging();
+  } else {
+    Logging.instance().disableDebugLogging();
   }
 });
 

@@ -1,5 +1,6 @@
+import path from "path";
 import { WindowInfo } from "@miniben90/x-win";
-import { app, Notification, shell, Tray } from "electron";
+import { app, nativeImage, Notification, shell, Tray } from "electron";
 import isDev from "electron-is-dev";
 import { autoUpdater } from "electron-updater";
 
@@ -24,13 +25,15 @@ export class Wakatime {
   private tray?: Tray | null;
   private versionString: string;
   private lastCheckedForUpdates: number = 0;
+  private lastPromptedToUpdateAt: number = 0;
+  private lastPromptedToUpdateVersion: string = "";
 
   constructor() {
     const version = `${getPlatfrom()}-wakatime/${app.getVersion()}`;
     this.versionString = version;
-    process.on("uncaughtException", function (error, origin) {
-      void Dependencies.reportError(error, origin, version);
-      console.log(error);
+    process.on("uncaughtException", async function (error, origin) {
+      await Dependencies.reportError(error, origin, version);
+      Logging.instance().log(error.toString(), LogLevel.ERROR);
     });
   }
 
@@ -41,12 +44,18 @@ export class Wakatime {
       Logging.instance().activateLoggingToFile();
     }
 
+    const debugMode = ConfigFile.getSetting("settings", "debug") === "true";
+    if (debugMode) {
+      Logging.instance().enableDebugLogging();
+    }
+
     Logging.instance().log(`Starting WakaTime v${app.getVersion()}`);
 
     if (SettingsManager.shouldRegisterAsLogInItem()) {
       SettingsManager.registerAsLogInItem();
     }
 
+    this.setupAutoUpdater();
     this.checkForUpdates();
 
     Dependencies.installDependencies();
@@ -180,15 +189,73 @@ export class Wakatime {
     Logging.instance().log(`Sending heartbeat: ${cli} ${args}`);
 
     try {
-      const [, err] = await exec(cli, ...args);
+      const [output, err] = await exec(cli, ...args);
       if (err) {
         Logging.instance().log(
           `Error sending heartbeat: ${err}`,
           LogLevel.ERROR,
+          true,
+        );
+        this.tray?.displayBalloon({
+          icon: nativeImage.createFromPath(
+            path.join(process.env.VITE_PUBLIC!, "trayIcon.png"),
+          ),
+          title: "WakaTime Error",
+          content: `Error when running wakatime-cli: ${err}`,
+        });
+        if (`${err}`.includes("ENOENT")) {
+          this.tray?.setImage(
+            nativeImage.createFromPath(
+              path.join(process.env.VITE_PUBLIC!, "trayIconRed.png"),
+            ),
+          );
+          if (Notification.isSupported()) {
+            const notification = new Notification({
+              title: "WakaTime Error",
+              body: "Unable to execute WakaTime cli. Please make sure WakaTime is not being blocked by AV software.",
+              icon: nativeImage.createFromPath(
+                path.join(process.env.VITE_PUBLIC!, "trayIconRed.png"),
+              ),
+            });
+            notification.show();
+          }
+        } else if (`${err}`.includes("EPERM")) {
+          this.tray?.setImage(
+            nativeImage.createFromPath(
+              path.join(process.env.VITE_PUBLIC!, "trayIconRed.png"),
+            ),
+          );
+          if (Notification.isSupported()) {
+            const notification = new Notification({
+              title: "WakaTime Error",
+              body: "Microsoft Defender is blocking WakaTime. Please allow WakaTime to run so it can upload code stats to your dashboard.",
+              icon: nativeImage.createFromPath(
+                path.join(process.env.VITE_PUBLIC!, "trayIconRed.png"),
+              ),
+            });
+            notification.show();
+          }
+        }
+      } else {
+        this.tray?.setImage(
+          nativeImage.createFromPath(
+            path.join(process.env.VITE_PUBLIC!, "trayIcon.png"),
+          ),
+        );
+      }
+      if (output) {
+        Logging.instance().log(
+          `Output from wakatime-cli when sending heartbeat: ${output}`,
+          LogLevel.ERROR,
+          true,
         );
       }
     } catch (error) {
-      Logging.instance().log(`Failed to send heartbeat: ${error}`);
+      Logging.instance().log(
+        `Exception when sending heartbeat: ${error}`,
+        LogLevel.ERROR,
+        true,
+      );
     }
 
     await this.fetchToday();
@@ -221,7 +288,7 @@ export class Wakatime {
     ];
 
     const cli = getCLIPath();
-    Logging.instance().log(`Fetching code time: ${cli} ${args}`);
+    Logging.instance().log(`Fetching code time: ${cli} ${args.join(" ")}`);
 
     try {
       const [output, err] = await exec(cli, ...args);
@@ -243,11 +310,72 @@ export class Wakatime {
     }
   }
 
+  public setupAutoUpdater() {
+    autoUpdater.setFeedURL({
+      provider: "github",
+      owner: "wakatime",
+      repo: "desktop-wakatime",
+    });
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.autoRunAppAfterInstall = true;
+
+    autoUpdater.on("checking-for-update", () => {
+      Logging.instance().log("Checking for updates");
+    });
+    autoUpdater.on("update-available", async (res) => {
+      Logging.instance().log(
+        `New version available. Version: ${res.version}, Files: ${res.files.map((file) => file.url).join(", ")}`,
+      );
+      if (!this.canPromptToUpdate(res.version)) {
+        Logging.instance().log(
+          "Already prompted to update this version recently, will download again in a week.",
+        );
+        return;
+      }
+      await autoUpdater.downloadUpdate();
+    });
+    autoUpdater.on("update-downloaded", (res) => {
+      Logging.instance().log(
+        `Update Downloaded. Downloaded file: ${res.downloadedFile}, Version: ${res.version}, `,
+      );
+      if (!this.canPromptToUpdate(res.version)) {
+        Logging.instance().log(
+          "Already prompted to update this version recently, will ask again in a week.",
+        );
+        return;
+      }
+
+      this.lastPromptedToUpdateVersion = res.version;
+      this.lastPromptedToUpdateAt = Date.now();
+      autoUpdater.quitAndInstall();
+    });
+    autoUpdater.on("update-not-available", () => {
+      Logging.instance().log("Update not available");
+    });
+    autoUpdater.on("update-cancelled", () => {
+      Logging.instance().log("Update cancelled");
+    });
+    autoUpdater.on("error", (err) => {
+      Logging.instance().log(
+        `electron-updater error. Error: ${err.message}`,
+        LogLevel.ERROR,
+      );
+    });
+  }
+
+  // Only prompt for same version once per week, or if app is restarted
+  private canPromptToUpdate(newVersion: string) {
+    if (this.lastPromptedToUpdateAt + 604800 * 1000 < Date.now()) return true;
+    if (this.lastPromptedToUpdateVersion !== newVersion) return true;
+    return false;
+  }
+
   public async checkForUpdates() {
     if (!PropertiesManager.autoUpdateEnabled || isDev) return;
     if (this.lastCheckedForUpdates + 600 * 1000 > Date.now()) return;
 
-    autoUpdater.checkForUpdatesAndNotify();
+    await autoUpdater.checkForUpdatesAndNotify();
   }
 
   pluginString(appData?: AppData, windowInfo?: WindowInfo) {

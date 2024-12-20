@@ -1,16 +1,16 @@
+import type { IGlobalKeyListener } from "node-global-key-listener";
 import {
-  WindowInfo,
   activeWindow,
   subscribeActiveWindow,
   unsubscribeActiveWindow,
+  WindowInfo,
 } from "@miniben90/x-win";
+import { GlobalKeyboardListener } from "node-global-key-listener";
 
 import { AppsManager } from "../helpers/apps-manager";
-import { GlobalKeyboardListener } from "node-global-key-listener";
-import type { IGlobalKeyListener } from "node-global-key-listener";
-import { Logging } from "../utils/logging";
 import { MonitoredApp } from "../helpers/monitored-app";
 import { MonitoringManager } from "../helpers/monitoring-manager";
+import { Logging, LogLevel } from "../utils/logging";
 import { Wakatime } from "./wakatime";
 
 export class Watcher {
@@ -51,7 +51,7 @@ export class Watcher {
         isWrite: false,
       });
     } catch (error) {
-      Logging.instance().log((error as Error).message);
+      Logging.instance().log((error as Error).message, LogLevel.ERROR, true);
     }
   };
 
@@ -88,7 +88,14 @@ export class Watcher {
           );
 
           if (isMonitored) {
+            Logging.instance().log(
+              `Monitoring ${windowInfo.info.name}: ${this.activeWindow.info.path}`,
+            );
             this.watchKeyboardEvents();
+          } else {
+            Logging.instance().log(
+              `Not monitoring ${windowInfo.info.name}: ${this.activeWindow.info.path}`,
+            );
           }
         }
       },
